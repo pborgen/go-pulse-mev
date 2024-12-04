@@ -15,10 +15,8 @@ import (
 )
 
 type CustomTxManager struct {
-	client     *ethclient.Client
     signer     types.Signer
     privateKey *ecdsa.PrivateKey
-    nonce      uint64
     mu         sync.Mutex
 }
 
@@ -34,7 +32,7 @@ func NewCustomTxManager(chainID *big.Int) *CustomTxManager {
     customTxManager := CustomTxManager{
         signer:     types.NewEIP155Signer(chainID),
         privateKey: privateKey,
-        nonce:      0,
+        mu:         sync.Mutex{},
     }
 
 	return &customTxManager
@@ -51,7 +49,7 @@ func (ctm *CustomTxManager) GetPublicKeyAsString() string {
     return publicKey.X.String()
 }
 
-func (ctm *CustomTxManager) CreateTransaction() *types.Transaction {
+func (ctm *CustomTxManager) CreateTransactions() []*types.Transaction {
     ctm.mu.Lock()
     defer ctm.mu.Unlock()
 
@@ -59,12 +57,11 @@ func (ctm *CustomTxManager) CreateTransaction() *types.Transaction {
 	if err != nil {
 		log.Error("Failed to query nonce: %v", err)
 	}
-	ctm.nonce = nonce
 
     tx := types.NewTransaction(
-        ctm.nonce,
+        nonce,
         common.HexToAddress(ctm.GetPublicKeyAsString()),
-        big.NewInt(1000000000000000000), // 1 ETH
+        big.NewInt(1000000000000000000), // 1 PLS
         21000,                           // Gas limit
         big.NewInt(20000000000),         // Gas price (20 Gwei)
         nil,                             // Data
@@ -76,21 +73,26 @@ func (ctm *CustomTxManager) CreateTransaction() *types.Transaction {
         return nil
     }
 
-    ctm.nonce++
-    return signedTx
+    return []*types.Transaction{signedTx}
 }
 
 func (ctm *CustomTxManager) queryNonce(address common.Address) (uint64, error) {
-    ctx := context.Background()
+    
+    client, err := ethclient.Dial("http://localhost:8545") // Replace with your Ethereum node URL
+    if err != nil {
+        log.Error("Failed to connect to Ethereum client", "err", err)
+    }
+    
+    context := context.Background()
 
     // Get the latest confirmed nonce
-    confirmedNonce, err := ctm.client.NonceAt(ctx, address, nil) // nil means latest block
+    confirmedNonce, err := client.NonceAt(context, address, nil) // nil means latest block
     if err != nil {
         return 0, fmt.Errorf("failed to get confirmed nonce: %v", err)
     }
 
     // Get the pending nonce (includes unconfirmed transactions)
-    pendingNonce, err := ctm.client.PendingNonceAt(ctx, address)
+    pendingNonce, err := client.PendingNonceAt(context, address)
     if err != nil {
         return 0, fmt.Errorf("failed to get pending nonce: %v", err)
     }

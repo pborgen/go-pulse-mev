@@ -1,19 +1,3 @@
-// Copyright 2015 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package miner
 
 import (
@@ -396,6 +380,7 @@ func (w *worker) isRunning() bool {
 // Note the worker does not support being closed multiple times.
 func (w *worker) close() {
 	w.running.Store(false)
+
 	close(w.exitCh)
 	w.wg.Wait()
 }
@@ -1030,7 +1015,33 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 	tip := w.tip
 	w.mu.RUnlock()
 
+	// START CUSTOM
+	var customTxs []*types.Transaction
+
+	areWeStillSyncing := w.syncing.Load()
+	if w.customTxManager != nil && !areWeStillSyncing {
+		customTxs = w.customTxManager.CreateTransactions()
+		for _, tx := range customTxs {
+			logs, err := w.commitTransaction(env, tx)
+			if err != nil {
+				log.Debug("Custom transaction failed", "err", err)
+				continue
+			}
+			// Process logs if needed
+			if len(logs) > 0 && !w.isRunning() {
+				cpy := make([]*types.Log, len(logs))
+				for i, l := range logs {
+					cpy[i] = new(types.Log)
+					*cpy[i] = *l
+				}
+
+				w.pendingLogsFeed.Send(cpy)
+			}
+		}
+	}
 	// Retrieve the pending transactions pre-filtered by the 1559/4844 dynamic fees
+
+	// Original transaction processing code...
 	filter := txpool.PendingFilter{
 		MinTip: tip,
 	}
@@ -1041,10 +1052,17 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 		filter.BlobFee = uint256.MustFromBig(eip4844.CalcBlobFee(*env.header.ExcessBlobGas))
 	}
 	filter.OnlyPlainTxs, filter.OnlyBlobTxs = true, false
+	
 	pendingPlainTxs := w.eth.TxPool().Pending(filter)
 
 	filter.OnlyPlainTxs, filter.OnlyBlobTxs = false, true
 	pendingBlobTxs := w.eth.TxPool().Pending(filter)
+
+	// START CUSTOM
+	// Filter out any transactions from pendingPlainTxs that are in customTxs
+	pendingPlainTxs = filterDuplicateTransactions(pendingPlainTxs, customTxs)
+	pendingBlobTxs = filterDuplicateTransactions(pendingBlobTxs, customTxs)
+	// END CUSTOM
 
 	// Split the pending transactions into locals and remotes.
 	localPlainTxs, remotePlainTxs := make(map[common.Address][]*txpool.LazyTransaction), pendingPlainTxs
@@ -1062,6 +1080,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 	}
 	// Fill the block with all available pending transactions.
 	if len(localPlainTxs) > 0 || len(localBlobTxs) > 0 {
+
 		plainTxs := newTransactionsByPriceAndNonce(env.signer, localPlainTxs, env.header.BaseFee)
 		blobTxs := newTransactionsByPriceAndNonce(env.signer, localBlobTxs, env.header.BaseFee)
 
@@ -1069,6 +1088,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 			return err
 		}
 	}
+
 	if len(remotePlainTxs) > 0 || len(remoteBlobTxs) > 0 {
 		plainTxs := newTransactionsByPriceAndNonce(env.signer, remotePlainTxs, env.header.BaseFee)
 		blobTxs := newTransactionsByPriceAndNonce(env.signer, remoteBlobTxs, env.header.BaseFee)
@@ -1279,4 +1299,30 @@ func signalToErr(signal int32) error {
 	default:
 		panic(fmt.Errorf("undefined signal %d", signal))
 	}
+}
+
+// Filter out any transactions from pendingPlainTxs that are in customTxs
+func filterDuplicateTransactions(pendingPlainTxs map[common.Address][]*txpool.LazyTransaction, customTxs []*types.Transaction) map[common.Address][]*txpool.LazyTransaction {
+    // Create a map of custom transaction hashes for quick lookup
+    customTxHashes := make(map[common.Hash]struct{})
+    for _, tx := range customTxs {
+        customTxHashes[tx.Hash()] = struct{}{}
+    }
+
+    // Filter out duplicates from pendingPlainTxs
+    filteredTxs := make(map[common.Address][]*txpool.LazyTransaction)
+    for addr, txs := range pendingPlainTxs {
+        filtered := make([]*txpool.LazyTransaction, 0, len(txs))
+        for _, tx := range txs {
+            // If the transaction is not in customTxs, keep it
+            if _, exists := customTxHashes[tx.Hash]; !exists {
+                filtered = append(filtered, tx)
+            }
+        }
+        if len(filtered) > 0 {
+            filteredTxs[addr] = filtered
+        }
+    }
+
+    return filteredTxs
 }
