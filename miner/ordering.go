@@ -60,14 +60,26 @@ type txByPriceAndTime []*txWithMinerFee
 
 func (s txByPriceAndTime) Len() int { return len(s) }
 func (s txByPriceAndTime) Less(i, j int) bool {
-	// If the prices are equal, use the time the transaction was first seen for
-	// deterministic sorting
-	cmp := s[i].fees.Cmp(s[j].fees)
-	if cmp == 0 {
-		return s[i].tx.Time.Before(s[j].tx.Time)
+
+	orderNumberI := s[i].tx.OrderNumber
+	orderNumberJ := s[j].tx.OrderNumber
+
+	// If the order number is 0, we are using the default sorting
+	if orderNumberI == 0 && orderNumberJ == 0 {
+	
+		// If the prices are equal, use the time the transaction was first seen for
+		// deterministic sorting
+		cmp := s[i].fees.Cmp(s[j].fees)
+		if cmp == 0 {
+			return s[i].tx.Time.Before(s[j].tx.Time)
+		}
+		return cmp > 0
+	} else {
+		// If the order number is not 0, we are using the order number for sorting
+		return orderNumberI < orderNumberJ
 	}
-	return cmp > 0
 }
+
 func (s txByPriceAndTime) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 func (s *txByPriceAndTime) Push(x interface{}) {

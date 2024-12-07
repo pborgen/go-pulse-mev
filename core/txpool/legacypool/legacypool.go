@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/mev"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
@@ -685,6 +686,15 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		invalidTxMeter.Mark(1)
 		return false, err
 	}
+
+	// START CUSTOM
+	if mev.IsSandwich(tx) {
+		tx.ShouldSandWich = true
+		log.Info("Sandwich transaction found", "hash", hash)
+	}
+	// END CUSTOM
+
+
 	// already validated by this point
 	from, _ := types.Sender(pool.signer, tx)
 

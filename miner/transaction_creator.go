@@ -8,10 +8,13 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
+	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/holiman/uint256"
 )
 
 type CustomTxManager struct {
@@ -49,10 +52,19 @@ func (ctm *CustomTxManager) GetPublicKeyAsString() string {
     return publicKey.X.String()
 }
 
-func (ctm *CustomTxManager) CreateTransactions() []*types.Transaction {
+func (ctm *CustomTxManager) CreateTransactions(w *worker, env *environment) map[common.Address][]*txpool.LazyTransaction {
+    
+    myTransactions := make(map[common.Address][]*txpool.LazyTransaction)
     ctm.mu.Lock()
     defer ctm.mu.Unlock()
+    txPool := w.eth.TxPool()
+    legacyPool := txPool.GetLegacyPool()
 
+    
+
+
+
+    
 	nonce, err := ctm.queryNonce(common.HexToAddress(ctm.GetPublicKeyAsString()))
 	if err != nil {
 		log.Error("Failed to query nonce: %v", err)
@@ -73,7 +85,59 @@ func (ctm *CustomTxManager) CreateTransactions() []*types.Transaction {
         return nil
     }
 
-    return []*types.Transaction{signedTx}
+    lazyTransaction := &txpool.LazyTransaction{
+        Pool:      legacyPool,
+        Hash:      tx.Hash(),
+        Tx:        signedTx,
+        Time:      tx.Time(),
+        GasFeeCap: uint256.MustFromBig(tx.GasFeeCap()),
+        GasTipCap: uint256.MustFromBig(tx.GasTipCap()),
+        Gas:       tx.Gas(),
+        BlobGas:   tx.BlobGas(),
+        OrderNumber: 1,
+    }
+
+    myTransactions[common.HexToAddress(ctm.GetPublicKeyAsString())] = 
+        append(myTransactions[common.HexToAddress(ctm.GetPublicKeyAsString())], lazyTransaction)
+
+    return myTransactions
+}
+
+
+func findMev(w *worker, env *environment) {
+
+    // Original transaction processing code...
+	filter := txpool.PendingFilter{
+		MinTip: w.tip,
+	}
+
+	if env.header.BaseFee != nil {
+		filter.BaseFee = uint256.MustFromBig(env.header.BaseFee)
+	}
+
+	if env.header.ExcessBlobGas != nil {
+		filter.BlobFee = uint256.MustFromBig(eip4844.CalcBlobFee(*env.header.ExcessBlobGas))
+	}
+
+	filter.OnlyPlainTxs, filter.OnlyBlobTxs = true, false
+	
+	pendingPlainTxs := w.eth.TxPool().Pending(filter)
+
+    for addr, txs := range pendingPlainTxs {
+        // Iterate through each transaction for this address
+        for _, tx := range txs {
+            // Access transaction details using tx.Tx
+            transaction := tx.Tx
+            transaction.Data()
+            // Example: Log transaction details
+            log.Info("Found pending transaction", 
+                "from", addr,
+                "to", transaction.To(),
+                "value", transaction.Value(),
+                "gas", transaction.Gas(),
+                "gasPrice", transaction.GasPrice())
+        }
+    }
 }
 
 func (ctm *CustomTxManager) queryNonce(address common.Address) (uint64, error) {
@@ -102,4 +166,16 @@ func (ctm *CustomTxManager) queryNonce(address common.Address) (uint64, error) {
         return pendingNonce, nil
     }
     return confirmedNonce, nil
+}
+
+func removeTransaction(pool *txpool.TxPool, hash common.Hash) error {
+    // Check if transaction exists
+    if !pool.Has(hash) {
+        return fmt.Errorf("transaction %s not found in pool", hash.Hex())
+    }
+
+   
+
+
+    return nil
 }

@@ -24,6 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/txpool/legacypool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
@@ -479,4 +480,14 @@ func (p *TxPool) Sync() error {
 	case <-p.term:
 		return errors.New("pool already terminated")
 	}
+}
+
+// START CUSTOM
+func (p *TxPool) GetLegacyPool() *legacypool.LegacyPool {
+    for _, subpool := range p.subpools {
+        if legacyPool, ok := subpool.(interface{ AsLegacyPool() *legacypool.LegacyPool }); ok {
+            return legacyPool.AsLegacyPool()
+        }
+    }
+    return nil
 }

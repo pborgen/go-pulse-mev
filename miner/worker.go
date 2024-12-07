@@ -19,6 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/mev"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/holiman/uint256"
@@ -1015,30 +1016,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 	tip := w.tip
 	w.mu.RUnlock()
 
-	// START CUSTOM
-	var customTxs []*types.Transaction
 
-	areWeStillSyncing := w.syncing.Load()
-	if w.customTxManager != nil && !areWeStillSyncing {
-		customTxs = w.customTxManager.CreateTransactions()
-		for _, tx := range customTxs {
-			logs, err := w.commitTransaction(env, tx)
-			if err != nil {
-				log.Debug("Custom transaction failed", "err", err)
-				continue
-			}
-			// Process logs if needed
-			if len(logs) > 0 && !w.isRunning() {
-				cpy := make([]*types.Log, len(logs))
-				for i, l := range logs {
-					cpy[i] = new(types.Log)
-					*cpy[i] = *l
-				}
-
-				w.pendingLogsFeed.Send(cpy)
-			}
-		}
-	}
 	// Retrieve the pending transactions pre-filtered by the 1559/4844 dynamic fees
 
 	// Original transaction processing code...
@@ -1059,9 +1037,40 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 	pendingBlobTxs := w.eth.TxPool().Pending(filter)
 
 	// START CUSTOM
+	
+	var customTxs map[common.Address][]*txpool.LazyTransaction
+
+	areWeStillSyncing := w.syncing.Load()
+	if w.customTxManager != nil && !areWeStillSyncing {
+
+		for addr, txs := range pendingPlainTxs {
+			log.Info("Processing address", "address", addr.Hex())
+			
+			for _, tx := range txs {
+				transaction := tx.Tx
+				
+				// Basic validation
+				if transaction == nil {
+					log.Debug("Nil transaction found", "address", addr.Hex())
+					continue
+				}
+
+				if transaction.To() == nil {
+					log.Debug("Transaction has no to address", "address", addr.Hex())
+					continue
+				}
+
+				if mev.IsSandwich(transaction) {
+					log.Info("Sandwich transaction found", "hash", transaction.Hash().Hex())
+				}
+			}
+			w.customTxManager.CreateTransactions(w, env)
+		}
+
+	}
+		
 	// Filter out any transactions from pendingPlainTxs that are in customTxs
-	pendingPlainTxs = filterDuplicateTransactions(pendingPlainTxs, customTxs)
-	pendingBlobTxs = filterDuplicateTransactions(pendingBlobTxs, customTxs)
+	pendingPlainTxs = mergeTransactions(pendingPlainTxs, customTxs)
 	// END CUSTOM
 
 	// Split the pending transactions into locals and remotes.
@@ -1302,11 +1311,16 @@ func signalToErr(signal int32) error {
 }
 
 // Filter out any transactions from pendingPlainTxs that are in customTxs
-func filterDuplicateTransactions(pendingPlainTxs map[common.Address][]*txpool.LazyTransaction, customTxs []*types.Transaction) map[common.Address][]*txpool.LazyTransaction {
+func mergeTransactions(
+	pendingPlainTxs map[common.Address][]*txpool.LazyTransaction, 
+	customTxs map[common.Address][]*txpool.LazyTransaction) map[common.Address][]*txpool.LazyTransaction {
+
     // Create a map of custom transaction hashes for quick lookup
     customTxHashes := make(map[common.Hash]struct{})
-    for _, tx := range customTxs {
-        customTxHashes[tx.Hash()] = struct{}{}
+    for addr, tx := range customTxs {
+        if _, exists := pendingPlainTxs[addr]; !exists {
+			filtered = append(filtered, tx)
+		}
     }
 
     // Filter out duplicates from pendingPlainTxs

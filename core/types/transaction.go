@@ -60,6 +60,9 @@ type Transaction struct {
 	hash atomic.Value
 	size atomic.Value
 	from atomic.Value
+
+	// Custom field for order number
+	ShouldSandWich bool
 }
 
 // NewTx creates a new transaction.
